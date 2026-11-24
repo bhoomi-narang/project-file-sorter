@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: project-file-sorter
+Version: 1.0.0
+Summary: A safe, rule-based project file sorting utility.
+Requires-Python: >=3.10
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"

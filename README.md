@@ -1,0 +1,32 @@
+# Project File Sorter
+
+A Python-based utility that automatically organizes project files
+according to project numbers and project status.
+
+## Features
+
+- Extract project numbers from filenames.
+- Classify files using a project register.
+- Identify exact duplicate files.
+- Separate unknown and unsorted files.
+- Archive files belonging to closed projects.
+- Support dry-run execution.
+- Prevent accidental file overwrites.
+- Maintain an undo log for file restoration.
+- Generate execution summaries.
+
+## Technology Stack
+
+- Python
+- CSV
+- Pytest
+- Git
+
+## Project Structure
+
+```text
+src/file_sorter/  Application source code
+tests/            Automated tests
+data/             Project register
+inbox/            Input files
+logs/             Execution and undo logs
