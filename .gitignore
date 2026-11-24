@@ -18,3 +18,6 @@ logs/*.log
 
 # Environment variables
 .env
+
+# Generated Python package metadata
+*.egg-info/

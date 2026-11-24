@@ -30,3 +30,17 @@ tests/            Automated tests
 data/             Project register
 inbox/            Input files
 logs/             Execution and undo logs
+
+## Development Progress
+
+### Phase 0 — Project Setup
+- Initialized Python project structure.
+- Configured virtual environment and Git.
+- Added project register.
+
+### Phase 1 — Project Register Loader
+- Implemented CSV-based project register loading.
+- Added validation for project numbers and statuses.
+- Added duplicate project number detection.
+- Added error handling for missing and malformed registers.
+- Added automated tests using pytest.
