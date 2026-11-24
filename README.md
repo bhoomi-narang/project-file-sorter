@@ -39,8 +39,15 @@ logs/             Execution and undo logs
 - Added project register.
 
 ### Phase 1 — Project Register Loader
+
 - Implemented CSV-based project register loading.
-- Added validation for project numbers and statuses.
+- Added validation for CSV headers.
+- Added six-digit project number validation.
+- Added active/closed status validation.
 - Added duplicate project number detection.
-- Added error handling for missing and malformed registers.
+- Added handling for missing and malformed CSV files.
+- Added UTF-8 BOM support.
 - Added automated tests using pytest.
+- Verified the loader against the actual project register.
+
+**Test Results:** 9 tests passed.

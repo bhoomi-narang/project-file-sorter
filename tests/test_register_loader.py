@@ -98,3 +98,14 @@ def test_whitespace_is_handled(tmp_path):
     result = load_project_register(file_path)
 
     assert result == {"925173": "active"}
+
+def test_whitespace_in_headers(tmp_path):
+    file_path = create_csv(
+        tmp_path,
+        " project_no , status \n"
+        "925173,active\n"
+    )
+
+    result = load_project_register(file_path)
+
+    assert result == {"925173": "active"}

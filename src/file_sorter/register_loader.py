@@ -47,6 +47,7 @@ def load_project_register(file_path: str | Path) -> dict[str, str]:
                 raise RegisterError(
                     "Invalid CSV headers. Expected: project_no,status"
                 )
+            reader.fieldnames = headers
 
             register = {}
 
