@@ -64,3 +64,16 @@ logs/             Execution and undo logs
 - Verified edge cases involving multiple numbers and seven-digit numbers.
 
 **Test Results:** 26 tests passed across Phases 1 and 2.
+
+### Phase 3 — Duplicate Detection
+
+- Implemented SHA-256 file hashing.
+- Added chunk-based file reading to reduce memory consumption.
+- Implemented duplicate grouping based on file hashes.
+- Added byte-for-byte verification for matching hashes.
+- Added deterministic canonical-file selection.
+- Prioritized filenames without Windows copy suffixes.
+- Ensured duplicate detection never modifies or deletes files.
+- Added automated tests for duplicate detection and hash calculation.
+
+**Test Results:** 39 tests passed across Phases 1–3.
