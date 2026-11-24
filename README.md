@@ -51,3 +51,16 @@ logs/             Execution and undo logs
 - Verified the loader against the actual project register.
 
 **Test Results:** 9 tests passed.
+
+### Phase 2 — Filename Parsing and Classification
+
+- Implemented six-digit project number extraction using regular expressions.
+- Added digit-boundary validation to prevent partial number matching.
+- Implemented classification based on project register status.
+- Added support for active, closed, unknown and unsorted categories.
+- Added structured classification results using dataclasses.
+- Added meaningful classification reasons.
+- Added automated tests for filename extraction and classification.
+- Verified edge cases involving multiple numbers and seven-digit numbers.
+
+**Test Results:** 26 tests passed across Phases 1 and 2.
