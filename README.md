@@ -82,3 +82,21 @@ Implemented duplicate detection using SHA-256 file hashing.
 ### Testing
 - Unit tests cover hashing, duplicate identification, canonical selection, file movement, filename collisions, and error handling.
 - All 20 Phase 3 tests pass.
+
+##### Phase 4 — Safe File Movement
+
+Implemented safe file movement according to the destination determined by the classification logic.
+
+### Features
+- Creates destination directories when required.
+- Moves files without overwriting existing files.
+- Routes filename conflicts to `_unsorted`.
+- Generates unique destination names when fallback filenames already exist.
+- Verifies file integrity using SHA-256 hashes.
+- Preserves the source file when copying or verification fails.
+- Handles missing files, permission errors, inaccessible directories, and failed source deletion.
+- Returns structured movement results with status and reason information.
+
+### Testing
+- Unit tests cover successful movement, conflicts, integrity verification, missing files, permission failures, and error handling.
+- All 16 Phase 4 tests pass.
