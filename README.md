@@ -65,15 +65,20 @@ logs/             Execution and undo logs
 
 **Test Results:** 26 tests passed across Phases 1 and 2.
 
-### Phase 3 — Duplicate Detection
+### ## Phase 3 — Duplicate Detection
 
-- Implemented SHA-256 file hashing.
-- Added chunk-based file reading to reduce memory consumption.
-- Implemented duplicate grouping based on file hashes.
-- Added byte-for-byte verification for matching hashes.
-- Added deterministic canonical-file selection.
-- Prioritized filenames without Windows copy suffixes.
-- Ensured duplicate detection never modifies or deletes files.
-- Added automated tests for duplicate detection and hash calculation.
+Implemented duplicate detection using SHA-256 file hashing.
 
-**Test Results:** 39 tests passed across Phases 1–3.
+### Features
+- Calculates SHA-256 hashes using chunk-based file reading.
+- Identifies files with identical content.
+- Uses deterministic canonical-file selection.
+- Preserves files with similar names but different contents.
+- Moves duplicate files into the `_duplicates` directory.
+- Never deletes a duplicate before verifying that its copy is complete and valid.
+- Handles destination filename collisions without overwriting existing files.
+- Returns structured results for duplicate movement operations.
+
+### Testing
+- Unit tests cover hashing, duplicate identification, canonical selection, file movement, filename collisions, and error handling.
+- All 20 Phase 3 tests pass.
