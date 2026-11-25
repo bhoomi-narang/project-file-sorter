@@ -100,3 +100,49 @@ Implemented safe file movement according to the destination determined by the cl
 ### Testing
 - Unit tests cover successful movement, conflicts, integrity verification, missing files, permission failures, and error handling.
 - All 16 Phase 4 tests pass.
+
+##### Phase 5 — Dry Run and Command-Line Interface
+
+Implemented a command-line interface using Python's argparse module.
+
+### Features
+
+- Dry-run is the default execution mode.
+- Actual file movement requires the `--apply` argument.
+- Displays planned source and destination paths.
+- Displays classification reasons for planned movements.
+- Integrates duplicate detection and duplicate movement.
+- Supports custom inbox and project register paths.
+- Uses the same execution planning and classification logic for dry-run and apply.
+- Provides useful error messages for invalid arguments and missing paths.
+- Displays execution results and movement counts.
+
+### Usage
+
+Dry-run:
+
+    python -m file_sorter.main
+
+Actual execution:
+
+    python -m file_sorter.main --apply
+
+Help:
+
+    python -m file_sorter.main --help
+
+Custom inbox:
+
+    python -m file_sorter.main --inbox custom_folder
+
+Custom register:
+
+    python -m file_sorter.main --register custom.csv
+
+### Testing
+
+- Added CLI tests for dry-run behaviour.
+- Added tests for actual file movement.
+- Tested active, closed, unknown and duplicate files.
+- Tested existing destination conflicts.
+- Tested missing paths and invalid arguments.
