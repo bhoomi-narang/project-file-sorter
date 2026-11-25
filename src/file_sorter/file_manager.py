@@ -1,3 +1,7 @@
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from file_sorter.undo_manager import UndoLogger
 import hashlib
 import shutil
 from dataclasses import dataclass
@@ -141,7 +145,8 @@ def _copy_to_available_destination(
     intended_destination: Path,
     unsorted_directory: Path,
     chunk_size: int,
-) -> tuple[Path, str, str]:
+    undo_logger=None,
+) -> tuple[Path, str, str, str | None]:
     """
     Select a destination and copy the file without overwriting.
 
@@ -173,8 +178,34 @@ def _copy_to_available_destination(
     while True:
         candidate = _unique_destination(destination_base, counter)
 
+        operation_id = None
+
         try:
-            _copy_and_verify(source, candidate, chunk_size)
+            if undo_logger is not None:
+                operation_id = undo_logger.start_operation(
+                    source,
+                    candidate,
+                )
+
+            operation_id = None
+
+            if undo_logger is not None:
+                operation_id = undo_logger.start_operation(
+                    source,
+                    candidate,
+                )
+
+            try:
+                _copy_and_verify(source, candidate, chunk_size)
+
+            except Exception as error:
+                if operation_id is not None:
+                    undo_logger.update_status(
+                        operation_id,
+                        "failed",
+                        f"Copy failed: {error}",
+                    )
+                raise
 
             if counter > 0:
                 reason += (
@@ -182,7 +213,7 @@ def _copy_to_available_destination(
                     "the original destination filename was occupied."
                 )
 
-            return candidate, status, reason
+            return candidate, status, reason, operation_id
 
         except FileExistsError:
             if not conflict_routed:
@@ -206,6 +237,7 @@ def manage_file(
     intended_destination: str | Path,
     unsorted_directory: str | Path,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    undo_logger=None,
 ) -> FileMoveResult:
     """
     Safely move a file to its intended destination.
@@ -298,14 +330,15 @@ def manage_file(
 
     # Copy and verify before deleting the source.
     try:
-        final_destination, status, reason = (
-            _copy_to_available_destination(
-                source=source_path,
-                intended_destination=intended_path,
-                unsorted_directory=unsorted_path,
-                chunk_size=chunk_size,
-            )
-        )
+        final_destination, status, reason, operation_id = (
+    _copy_to_available_destination(
+        source=source_path,
+        intended_destination=intended_path,
+        unsorted_directory=unsorted_path,
+        chunk_size=chunk_size,
+        undo_logger=undo_logger,
+    )
+)
 
     except PermissionError as error:
         return failure(f"Permission denied during file movement: {error}")
@@ -319,20 +352,28 @@ def manage_file(
     # Delete the source only after successful copy and verification.
     try:
         source_path.unlink()
-
-    except PermissionError as error:
-        return failure(
-            f"Destination copy was verified, but source deletion "
-            f"was denied: {error}. Both files have been preserved.",
-            destination=final_destination,
-        )
+        if operation_id is not None:
+            undo_logger.update_status(
+                operation_id,
+                "completed",
+                "File successfully moved.",
+            )
 
     except OSError as error:
+        if operation_id is not None:
+            undo_logger.update_status(
+                operation_id,
+                "failed",
+                "Destination copy exists, but original deletion failed.",
+            )
+
         return failure(
             f"Destination copy was verified, but source deletion failed: "
             f"{error}. Both files have been preserved.",
             destination=final_destination,
         )
+
+
 
     return FileMoveResult(
         source=source_path,
@@ -341,3 +382,4 @@ def manage_file(
         reason=reason,
         success=True,
     )
+

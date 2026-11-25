@@ -146,3 +146,46 @@ Custom register:
 - Tested active, closed, unknown and duplicate files.
 - Tested existing destination conflicts.
 - Tested missing paths and invalid arguments.
+
+### Phase 6 — Undo and Recovery Mechanism
+
+Implemented an undo and recovery mechanism that allows users to reverse file-sorting operations.
+
+### Implementation
+
+- Generates a unique JSONL undo log for every real execution.
+- Records original file paths, destination paths, file hashes, operation IDs, timestamps, and operation statuses.
+- Tracks operations through `pending`, `completed`, `failed`, `restoring`, `restored`, and `restore_failed` states.
+- Restores files to their original locations.
+- Uses exclusive file creation to prevent overwriting existing files.
+- Verifies file integrity using SHA-256 before and after restoration.
+- Processes undo operations in reverse execution order.
+- Handles interrupted operations using recorded operation states.
+- Preserves conflicting files when safe restoration cannot be established.
+- Supports retrying failed or interrupted restoration operations.
+
+### Usage
+
+Undo a previous sorting execution:
+
+```cmd
+python -m file_sorter.main --undo logs/undo_<timestamp>_<id>.jsonl
+```
+
+Replace the example log filename with the actual undo log generated during execution.
+
+### Recovery and Safety
+
+- Existing files are never blindly overwritten.
+- Files with unexpected hashes are not restored.
+- If both original and destination files exist during a normal undo operation, both are preserved.
+- If restoration was interrupted after copying the original file back, the application can verify both copies and safely remove the redundant destination copy.
+- Undo operations are recorded using append-only JSONL events.
+
+**Limitation:** Filesystem operations and undo-log writes are not one atomic transaction. The recovery mechanism handles identified interruption scenarios but cannot guarantee recovery from every possible hardware, filesystem, or power failure.
+
+### Testing
+
+Added unit and integration tests covering restoration, duplicate restoration, multiple-file restoration, hash verification, overwrite prevention, and interrupted-operation recovery.
+
+**Test result:** 89 tests passed.

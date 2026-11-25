@@ -1,4 +1,7 @@
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from file_sorter.undo_manager import UndoLogger
 import hashlib
 import re
 import shutil
@@ -213,16 +216,18 @@ def _move_duplicate(
     source: Path,
     destination_directory: Path,
     chunk_size: int,
+    undo_logger=None,
 ) -> DuplicateMoveResult:
     """
     Safely move one duplicate file.
 
-    The source is preserved until the destination copy has
-    been verified using SHA-256.
+    Records the operation before copying.
+    Verifies the destination before deleting the source.
     """
 
     destination = None
     destination_created = False
+    operation_id = None
 
     try:
         if not source.is_file():
@@ -234,22 +239,34 @@ def _move_duplicate(
                 success=False,
             )
 
-        # Calculate source hash before copying.
-        original_hash = calculate_file_hash(source, chunk_size)
+        # Calculate original file hash.
+        original_hash = calculate_file_hash(
+            source,
+            chunk_size,
+        )
 
         destination_directory.mkdir(
             parents=True,
             exist_ok=True,
         )
 
+        # Generate a unique destination.
         destination = _get_unique_destination(
             destination_directory / source.name
         )
 
-        # Exclusive creation prevents accidental overwriting.
+        # Record the operation BEFORE copying.
+        if undo_logger is not None:
+            operation_id = undo_logger.start_operation(
+                source,
+                destination,
+            )
+
+        # Copy without overwriting.
         with source.open("rb") as source_file:
             with destination.open("xb") as destination_file:
                 destination_created = True
+
                 shutil.copyfileobj(
                     source_file,
                     destination_file,
@@ -258,7 +275,7 @@ def _move_duplicate(
 
         shutil.copystat(source, destination)
 
-        # Verify the copied file.
+        # Verify destination hash.
         copied_hash = calculate_file_hash(
             destination,
             chunk_size,
@@ -269,7 +286,7 @@ def _move_duplicate(
                 "SHA-256 verification failed after copying."
             )
 
-        # Ensure the source did not change during copying.
+        # Ensure source has not changed.
         current_source_hash = calculate_file_hash(
             source,
             chunk_size,
@@ -280,11 +297,19 @@ def _move_duplicate(
                 "Source file changed during duplicate movement."
             )
 
-        # Delete the source only after successful verification.
+        # Delete source only after successful verification.
         try:
             source.unlink()
 
         except OSError as error:
+
+            if operation_id is not None:
+                undo_logger.update_status(
+                    operation_id,
+                    "failed",
+                    "Destination copy exists, but source deletion failed.",
+                )
+
             return DuplicateMoveResult(
                 source=source,
                 destination=destination,
@@ -294,6 +319,14 @@ def _move_duplicate(
                     f"failed: {error}. Both copies have been preserved."
                 ),
                 success=False,
+            )
+
+        # Record successful movement.
+        if operation_id is not None:
+            undo_logger.update_status(
+                operation_id,
+                "completed",
+                "Duplicate successfully moved.",
             )
 
         return DuplicateMoveResult(
@@ -306,7 +339,15 @@ def _move_duplicate(
 
     except Exception as error:
 
-        # Clean up incomplete destination copies where possible.
+        # Record failed operation.
+        if operation_id is not None:
+            undo_logger.update_status(
+                operation_id,
+                "failed",
+                str(error),
+            )
+
+        # Clean incomplete destination copies.
         if destination_created and destination is not None:
             try:
                 destination.unlink(missing_ok=True)
@@ -318,7 +359,7 @@ def _move_duplicate(
                     status="error",
                     reason=(
                         f"Movement failed: {error}. "
-                        f"Incomplete destination cleanup also failed: "
+                        f"Destination cleanup also failed: "
                         f"{cleanup_error}. Source was preserved."
                     ),
                     success=False,
@@ -326,7 +367,7 @@ def _move_duplicate(
 
         return DuplicateMoveResult(
             source=source,
-            destination=None,
+            destination=destination,
             status="error",
             reason=str(error),
             success=False,
@@ -337,12 +378,13 @@ def move_duplicates(
     duplicate_groups: Iterable[DuplicateGroup],
     duplicate_directory: str | Path = "_duplicates",
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    undo_logger=None,
 ) -> list[DuplicateMoveResult]:
     """
     Move every detected duplicate into the duplicate directory.
 
-    Canonical files are never moved by this function.
-    Existing destination files are never overwritten.
+    Canonical files are never moved.
+    Every duplicate movement can be recorded for undo.
     """
 
     if chunk_size <= 0:
@@ -363,6 +405,7 @@ def move_duplicates(
                 source=duplicate_file,
                 destination_directory=duplicate_directory,
                 chunk_size=chunk_size,
+                undo_logger=undo_logger,
             )
 
             results.append(result)

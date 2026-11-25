@@ -1,3 +1,7 @@
+import uuid
+from datetime import datetime
+
+from file_sorter.undo_manager import UndoLogger, undo_execution
 import argparse
 import sys
 from dataclasses import dataclass
@@ -183,7 +187,7 @@ def display_plan(plan: ExecutionPlan) -> None:
     print("----------------------------------------")
 
 
-def execute_plan(plan: ExecutionPlan) -> tuple[int, int]:
+def execute_plan(plan, undo_logger):
     """Execute the operations in the generated plan."""
 
     successful = 0
@@ -206,6 +210,7 @@ def execute_plan(plan: ExecutionPlan) -> tuple[int, int]:
         duplicate_results = move_duplicates(
             plan.duplicate_groups,
             duplicate_directory,
+            undo_logger=undo_logger,
         )
 
         for result in duplicate_results:
@@ -231,6 +236,7 @@ def execute_plan(plan: ExecutionPlan) -> tuple[int, int]:
             source=operation.source,
             intended_destination=operation.intended_destination,
             unsorted_directory=unsorted_directory,
+            undo_logger=undo_logger,
         )
 
         print(f"Source      : {result.source}")
@@ -252,45 +258,87 @@ def execute_plan(plan: ExecutionPlan) -> tuple[int, int]:
     return successful, failed
 
 
-def create_parser() -> argparse.ArgumentParser:
-    """Create the command-line argument parser."""
-
+def create_parser():
     parser = argparse.ArgumentParser(
-        prog="file-sorter",
-        description=(
-            "Organize project files using a project register. "
-            "Dry-run is the default; use --apply to move files."
-        ),
+        description="Project File Sorter"
     )
 
-    parser.add_argument(
+    action_group = parser.add_mutually_exclusive_group()
+
+    action_group.add_argument(
         "--apply",
         action="store_true",
-        help="Execute file movements. Without this option, only preview.",
+        help="Execute the sorting operation.",
+    )
+
+    action_group.add_argument(
+        "--undo",
+        type=Path,
+        metavar="LOG_FILE",
+        help="Restore files using an undo log.",
     )
 
     parser.add_argument(
         "--inbox",
         type=Path,
         default=Path("inbox"),
-        help="Input directory containing files (default: inbox).",
+        help="Input directory.",
     )
 
     parser.add_argument(
         "--register",
         type=Path,
         default=Path("data/project_register.csv"),
-        help="Project register CSV (default: data/project_register.csv).",
+        help="Project register CSV.",
     )
 
     return parser
 
+def create_undo_log():
+    logs_directory = Path("logs")
+    logs_directory.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_id = uuid.uuid4().hex[:8]
+
+    return logs_directory / f"undo_{timestamp}_{unique_id}.jsonl"
+
 
 def main(argv: list[str] | None = None) -> int:
+
     """CLI entry point."""
 
     parser = create_parser()
     args = parser.parse_args(argv)
+
+    # Handle undo operation.
+    if args.undo:
+        try:
+            results = undo_execution(args.undo)
+
+            successful = 0
+            failed = 0
+
+            for result in results:
+                print(
+                    f"{result.status.upper()}: "
+                    f"{result.original_path} - {result.reason}"
+                )
+
+                if result.success:
+                    successful += 1
+                else:
+                    failed += 1
+
+            print("\nUndo Summary")
+            print(f"Restored: {successful}")
+            print(f"Failed: {failed}")
+
+            return 1 if failed else 0
+
+        except Exception as error:
+            print(f"Undo failed: {error}", file=sys.stderr)
+            return 1
 
     try:
         plan = build_execution_plan(
@@ -300,15 +348,26 @@ def main(argv: list[str] | None = None) -> int:
 
         display_plan(plan)
 
+        # Dry run is the default.
         if not args.apply:
             print("\nDRY RUN: No files were moved or modified.")
             print("Use --apply to execute these operations.")
             return 0
 
-        _, failed = execute_plan(plan)
+        # Create undo log for actual execution.
+        undo_log_path = create_undo_log()
+        undo_logger = UndoLogger(undo_log_path)
+
+        print(f"\nUndo log created: {undo_log_path}")
+
+        # Execute the plan with undo logging enabled.
+        _, failed = execute_plan(plan, undo_logger)
 
         if failed:
-            print("\nExecution completed with errors.", file=sys.stderr)
+            print(
+                "\nExecution completed with errors.",
+                file=sys.stderr,
+            )
             return 1
 
         print("\nExecution completed successfully.")
@@ -326,7 +385,6 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"\nERROR: {error}", file=sys.stderr)
         return 2
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -1,3 +1,8 @@
+import json
+from pathlib import Path
+
+from file_sorter.main import main
+
 from pathlib import Path
 
 import pytest
@@ -261,3 +266,185 @@ def test_empty_inbox_dry_run(tmp_path):
     ])
 
     assert result == 0
+
+def create_test_environment(tmp_path):
+    """Create an isolated sorter environment for integration tests."""
+
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+
+    data_directory = tmp_path / "data"
+    data_directory.mkdir()
+
+    register = data_directory / "project_register.csv"
+    register.write_text(
+        "project_no,status\n"
+        "925173,active\n",
+        encoding="utf-8",
+    )
+
+    return inbox, register
+
+def test_apply_and_undo_normal_file(tmp_path, monkeypatch):
+    inbox, register = create_test_environment(tmp_path)
+
+    source = inbox / "925173_report.pdf"
+    source.write_text("Important project report")
+
+    monkeypatch.chdir(tmp_path)
+
+    # Execute sorting.
+    result = main([
+        "--apply",
+        "--inbox", "inbox",
+        "--register", "data/project_register.csv",
+    ])
+
+    assert result == 0
+
+    sorted_file = tmp_path / "925173" / source.name
+    assert sorted_file.exists()
+    assert not source.exists()
+
+    # Find generated undo log.
+    log_files = list((tmp_path / "logs").glob("*.jsonl"))
+
+    assert len(log_files) == 1
+
+    # Verify operation was recorded.
+    with log_files[0].open(encoding="utf-8") as file:
+        events = [json.loads(line) for line in file]
+
+    assert any(
+        event.get("event") == "operation"
+        and event.get("original_path") == str(source.resolve())
+        for event in events
+    )
+
+    # Undo sorting.
+    result = main(["--undo", str(log_files[0])])
+
+    assert result == 0
+    assert source.exists()
+    assert not sorted_file.exists()
+    assert source.read_text() == "Important project report"
+
+def test_apply_and_undo_duplicate_file(tmp_path, monkeypatch):
+    inbox, register = create_test_environment(tmp_path)
+
+    original = inbox / "925173_report.pdf"
+    duplicate = inbox / "925173_report (1).pdf"
+
+    original.write_text("Identical report")
+    duplicate.write_text("Identical report")
+
+    monkeypatch.chdir(tmp_path)
+
+    # Execute sorting.
+    result = main([
+        "--apply",
+        "--inbox", "inbox",
+        "--register", "data/project_register.csv",
+    ])
+
+    assert result == 0
+
+    sorted_original = tmp_path / "925173" / original.name
+    sorted_duplicate = tmp_path / "_duplicates" / duplicate.name
+
+    assert sorted_original.exists()
+    assert sorted_duplicate.exists()
+
+    assert not original.exists()
+    assert not duplicate.exists()
+
+    log_files = list((tmp_path / "logs").glob("*.jsonl"))
+    assert len(log_files) == 1
+
+    # Undo sorting.
+    result = main(["--undo", str(log_files[0])])
+
+    assert result == 0
+
+    assert original.exists()
+    assert duplicate.exists()
+
+    assert original.read_text() == duplicate.read_text()
+
+    assert not sorted_original.exists()
+    assert not sorted_duplicate.exists()
+
+def test_apply_and_undo_multiple_files(tmp_path, monkeypatch):
+    inbox, register = create_test_environment(tmp_path)
+
+    files = {
+        "925173_report.pdf": "Report content",
+        "925173_layout.dwg": "Layout content",
+        "925173_schedule.xlsx": "Schedule content",
+    }
+
+    for filename, content in files.items():
+        (inbox / filename).write_text(content)
+
+    monkeypatch.chdir(tmp_path)
+
+    # Execute sorting.
+    result = main([
+        "--apply",
+        "--inbox", "inbox",
+        "--register", "data/project_register.csv",
+    ])
+
+    assert result == 0
+
+    # Verify all files were sorted.
+    for filename in files:
+        assert (tmp_path / "925173" / filename).exists()
+        assert not (inbox / filename).exists()
+
+    log_files = list((tmp_path / "logs").glob("*.jsonl"))
+    assert len(log_files) == 1
+
+    # Undo sorting.
+    result = main(["--undo", str(log_files[0])])
+
+    assert result == 0
+
+    # Verify every file was restored.
+    for filename, content in files.items():
+        restored_file = inbox / filename
+
+        assert restored_file.exists()
+        assert restored_file.read_text() == content
+
+        assert not (tmp_path / "925173" / filename).exists()
+
+def test_undo_does_not_overwrite_existing_original(tmp_path, monkeypatch):
+    inbox, register = create_test_environment(tmp_path)
+
+    source = inbox / "925173_report.pdf"
+    source.write_text("Original content")
+
+    monkeypatch.chdir(tmp_path)
+
+    assert main([
+        "--apply",
+        "--inbox", "inbox",
+        "--register", "data/project_register.csv",
+    ]) == 0
+
+    log_files = list((tmp_path / "logs").glob("*.jsonl"))
+    assert len(log_files) == 1
+
+    sorted_file = tmp_path / "925173" / source.name
+
+    # Simulate another file appearing at the original location.
+    source.write_text("Different content")
+
+    result = main(["--undo", str(log_files[0])])
+
+    assert result == 1
+
+    # Neither file should be overwritten or deleted.
+    assert source.read_text() == "Different content"
+    assert sorted_file.read_text() == "Original content"
