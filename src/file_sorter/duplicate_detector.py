@@ -3,10 +3,16 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from file_sorter.undo_manager import UndoLogger
 import hashlib
+import os
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+
+from file_sorter.path_safety import (
+    ensure_no_link_components,
+    is_occupied,
+)
 from typing import Iterable
 
 
@@ -196,7 +202,7 @@ def _get_unique_destination(destination: Path) -> Path:
         report (2).pdf
     """
 
-    if not destination.exists():
+    if not is_occupied(destination):
         return destination
 
     counter = 1
@@ -206,7 +212,7 @@ def _get_unique_destination(destination: Path) -> Path:
             f"{destination.stem} ({counter}){destination.suffix}"
         )
 
-        if not candidate.exists():
+        if not is_occupied(candidate):
             return candidate
 
         counter += 1
@@ -227,9 +233,13 @@ def _move_duplicate(
 
     destination = None
     destination_created = False
+    source_deleted = False
     operation_id = None
 
     try:
+        ensure_no_link_components(source)
+        ensure_no_link_components(destination_directory)
+
         if not source.is_file():
             return DuplicateMoveResult(
                 source=source,
@@ -272,6 +282,8 @@ def _move_duplicate(
                     destination_file,
                     length=chunk_size,
                 )
+                destination_file.flush()
+                os.fsync(destination_file.fileno())
 
         shutil.copystat(source, destination)
 
@@ -300,6 +312,7 @@ def _move_duplicate(
         # Delete source only after successful verification.
         try:
             source.unlink()
+            source_deleted = True
 
         except OSError as error:
 
@@ -338,38 +351,49 @@ def _move_duplicate(
         )
 
     except Exception as error:
+        # A failed status append must never cause deletion of the only
+        # remaining copy. Once the source is gone, preserve destination;
+        # the pending undo record can recover it later.
+        log_error = None
+        if operation_id is not None and not source_deleted:
+            try:
+                undo_logger.update_status(
+                    operation_id,
+                    "failed",
+                    str(error),
+                )
+            except Exception as status_error:
+                log_error = status_error
 
-        # Record failed operation.
-        if operation_id is not None:
-            undo_logger.update_status(
-                operation_id,
-                "failed",
-                str(error),
-            )
-
-        # Clean incomplete destination copies.
-        if destination_created and destination is not None:
+        if destination_created and destination is not None and not source_deleted:
             try:
                 destination.unlink(missing_ok=True)
-
             except OSError as cleanup_error:
                 return DuplicateMoveResult(
                     source=source,
                     destination=destination,
                     status="error",
                     reason=(
-                        f"Movement failed: {error}. "
-                        f"Destination cleanup also failed: "
-                        f"{cleanup_error}. Source was preserved."
+                        f"Movement failed: {error}. Destination cleanup also "
+                        f"failed: {cleanup_error}. Source was preserved."
                     ),
                     success=False,
                 )
+
+        reason = str(error)
+        if source_deleted:
+            reason += (
+                " The source was already removed; the verified destination "
+                "was preserved for undo recovery."
+            )
+        if log_error is not None:
+            reason += f" Undo-log status update also failed: {log_error}"
 
         return DuplicateMoveResult(
             source=source,
             destination=destination,
             status="error",
-            reason=str(error),
+            reason=reason,
             success=False,
         )
 

@@ -54,6 +54,42 @@ def calculate_hash(path, chunk_size=DEFAULT_CHUNK_SIZE):
     return hasher.hexdigest()
 
 
+def _repair_incomplete_log_tail(path: Path) -> None:
+    """Discard only an unterminated final JSONL record.
+
+    A process can be interrupted while appending an event. Keeping the
+    partial bytes would corrupt the next append, so truncate back to the
+    last complete newline-delimited event. Complete malformed lines are
+    deliberately retained and rejected by read_undo_log().
+    """
+    with path.open("r+b") as file:
+        file.seek(0, os.SEEK_END)
+        end = file.tell()
+        if end == 0:
+            return
+
+        file.seek(end - 1)
+        if file.read(1) == b"\n":
+            return
+
+        position = end
+        while position > 0:
+            start = max(0, position - 8192)
+            file.seek(start)
+            chunk = file.read(position - start)
+            newline = chunk.rfind(b"\n")
+            if newline >= 0:
+                file.truncate(start + newline + 1)
+                file.flush()
+                os.fsync(file.fileno())
+                return
+            position = start
+
+        file.truncate(0)
+        file.flush()
+        os.fsync(file.fileno())
+
+
 class UndoLogger:
 
     def __init__(self, log_path):
@@ -61,6 +97,7 @@ class UndoLogger:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.log_path.touch(exist_ok=True)
+        _repair_incomplete_log_tail(self.log_path)
 
     def _append(self, event):
         try:
@@ -130,68 +167,82 @@ def read_undo_log(log_path):
     operations = {}
 
     try:
-        with path.open("r", encoding="utf-8") as file:
-            lines = file.readlines()
+        with path.open("rb") as file:
+            for line_number, raw_line in enumerate(file, start=1):
+                # JSONL records are newline-terminated. An unterminated
+                # final line is an interrupted append and is ignored.
+                if not raw_line.endswith(b"\n"):
+                    break
 
-        for line_number, line in enumerate(lines, start=1):
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise UndoLogError(
-                    f"Invalid JSON at line {line_number}."
-                ) from error
-
-            if event.get("event") == "operation":
-                required = {
-                    "operation_id",
-                    "original_path",
-                    "destination_path",
-                    "file_hash",
-                    "status",
-                }
-
-                if not required.issubset(event):
+                try:
+                    event = json.loads(raw_line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
                     raise UndoLogError(
-                        f"Missing operation fields at line {line_number}."
+                        f"Invalid JSON at line {line_number}."
+                    ) from error
+
+                if not isinstance(event, dict):
+                    raise UndoLogError(
+                        f"Invalid event structure at line {line_number}."
                     )
 
-                if event["status"] not in VALID_STATUSES:
+                event_type = event.get("event")
+
+                if event_type == "operation":
+                    required = {
+                        "operation_id",
+                        "original_path",
+                        "destination_path",
+                        "file_hash",
+                        "status",
+                    }
+                    if not required.issubset(event):
+                        raise UndoLogError(
+                            f"Missing operation fields at line {line_number}."
+                        )
+
+                    operation_id = event["operation_id"]
+                    if not isinstance(operation_id, str) or not operation_id:
+                        raise UndoLogError(
+                            f"Invalid operation ID at line {line_number}."
+                        )
+                    if operation_id in operations:
+                        raise UndoLogError(
+                            f"Duplicate operation ID: {operation_id}"
+                        )
+                    if event["status"] not in VALID_STATUSES:
+                        raise UndoLogError(
+                            f"Invalid status at line {line_number}."
+                        )
+                    if not isinstance(event["file_hash"], str) or len(event["file_hash"]) != 64:
+                        raise UndoLogError(
+                            f"Invalid file hash at line {line_number}."
+                        )
+                    if not isinstance(event["original_path"], str) or not isinstance(event["destination_path"], str):
+                        raise UndoLogError(
+                            f"Invalid paths at line {line_number}."
+                        )
+
+                    operations[operation_id] = event.copy()
+
+                elif event_type == "status":
+                    operation_id = event.get("operation_id")
+                    status = event.get("status")
+                    if operation_id not in operations:
+                        raise UndoLogError(
+                            f"Unknown operation ID at line {line_number}."
+                        )
+                    if status not in VALID_STATUSES:
+                        raise UndoLogError(
+                            f"Invalid status at line {line_number}."
+                        )
+                    operations[operation_id]["status"] = status
+                    operations[operation_id]["reason"] = event.get("reason", "")
+
+                else:
                     raise UndoLogError(
-                        f"Invalid status at line {line_number}."
+                        f"Unknown event at line {line_number}."
                     )
-
-                operation_id = event["operation_id"]
-
-                if operation_id in operations:
-                    raise UndoLogError(
-                        f"Duplicate operation ID: {operation_id}"
-                    )
-
-                operations[operation_id] = event.copy()
-
-            elif event.get("event") == "status":
-                operation_id = event.get("operation_id")
-                status = event.get("status")
-
-                if operation_id not in operations:
-                    raise UndoLogError(
-                        f"Unknown operation ID at line {line_number}."
-                    )
-
-                if status not in VALID_STATUSES:
-                    raise UndoLogError(
-                        f"Invalid status at line {line_number}."
-                    )
-
-                operations[operation_id]["status"] = status
-                operations[operation_id]["reason"] = event.get(
-                    "reason", ""
-                )
-
-            else:
-                raise UndoLogError(
-                    f"Unknown event at line {line_number}."
-                )
 
     except OSError as error:
         raise UndoLogError(

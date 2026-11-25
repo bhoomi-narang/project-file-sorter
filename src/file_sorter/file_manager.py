@@ -3,9 +3,16 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from file_sorter.undo_manager import UndoLogger
 import hashlib
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+
+from file_sorter.path_safety import (
+    PathSafetyError,
+    ensure_no_link_components,
+    is_occupied,
+)
 
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024
@@ -108,6 +115,7 @@ def _copy_and_verify(
                 )
 
                 destination_file.flush()
+                os.fsync(destination_file.fileno())
 
         copied_hash = _calculate_hash(destination, chunk_size)
 
@@ -140,43 +148,74 @@ def _copy_and_verify(
         raise
 
 
+
 def _copy_to_available_destination(
     source: Path,
     intended_destination: Path,
     unsorted_directory: Path,
     chunk_size: int,
     undo_logger=None,
+    duplicate_directory: Path | None = None,
 ) -> tuple[Path, str, str, str | None]:
     """
-    Select a destination and copy the file without overwriting.
+    Select a safe destination without overwriting existing files.
 
-    If the intended destination is occupied, use _unsorted.
-    If the fallback filename is occupied, generate a unique name.
-
-    Exclusive file creation handles collisions that occur between
-    checking the destination and actually creating it.
+    Existing identical files are routed to _duplicates.
+    Existing files with different contents are routed to _unsorted.
     """
 
-    conflict_routed = intended_destination.exists()
-
-    if conflict_routed:
-        destination_base = unsorted_directory / source.name
-
-        status = "conflict_routed"
-        reason = (
-            "Intended destination filename already exists. "
-            "Incoming file routed to _unsorted."
+    if duplicate_directory is None:
+        duplicate_directory = (
+            unsorted_directory.parent / "_duplicates"
         )
-    else:
-        destination_base = intended_destination
 
-        status = "moved"
-        reason = "File moved successfully."
+    def choose_destination():
+        if not is_occupied(intended_destination):
+            return (
+                intended_destination,
+                "moved",
+                "File moved successfully.",
+            )
+
+        if (
+            intended_destination.is_file()
+            and not intended_destination.is_symlink()
+        ):
+            source_hash = _calculate_hash(source, chunk_size)
+            existing_hash = _calculate_hash(
+                intended_destination,
+                chunk_size,
+            )
+
+            if source_hash == existing_hash:
+                duplicate_directory.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                return (
+                    duplicate_directory / source.name,
+                    "duplicate_existing",
+                    "Identical file already exists at the intended "
+                    "destination. Incoming copy routed to _duplicates.",
+                )
+
+        return (
+            unsorted_directory / source.name,
+            "conflict_routed",
+            "Destination filename already exists with different "
+            "content. Incoming file routed to _unsorted.",
+        )
+
+    destination_base, status, reason = choose_destination()
 
     counter = 0
 
     while True:
-        candidate = _unique_destination(destination_base, counter)
+        candidate = _unique_destination(
+            destination_base,
+            counter,
+        )
 
         operation_id = None
 
@@ -188,7 +227,11 @@ def _copy_to_available_destination(
                 )
 
             try:
-                _copy_and_verify(source, candidate, chunk_size)
+                _copy_and_verify(
+                    source,
+                    candidate,
+                    chunk_size,
+                )
 
             except Exception as error:
                 if operation_id is not None:
@@ -202,26 +245,22 @@ def _copy_to_available_destination(
             if counter > 0:
                 reason += (
                     " A unique filename was generated because "
-                    "the original destination filename was occupied."
+                    "the destination filename was occupied."
                 )
 
             return candidate, status, reason, operation_id
 
         except FileExistsError:
-            if not conflict_routed:
-                # The intended destination became occupied after
-                # the initial existence check.
-                conflict_routed = True
-                destination_base = unsorted_directory / source.name
-                status = "conflict_routed"
-                reason = (
-                    "Intended destination became occupied during "
-                    "processing. Incoming file routed to _unsorted."
-                )
-                counter = 0
-                continue
+            # The attempted copy failed because the destination
+            # became occupied. The inner exception handler has
+            # already recorded the failed undo operation.
 
-            counter += 1
+            if candidate == intended_destination:
+                destination_base, status, reason = choose_destination()
+                counter = 0
+            else:
+                counter += 1
+
 
 
 def manage_file(
@@ -230,6 +269,7 @@ def manage_file(
     unsorted_directory: str | Path,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     undo_logger=None,
+    duplicate_directory: str | Path | None = None,
 ) -> FileMoveResult:
     """
     Safely move a file to its intended destination.
@@ -264,6 +304,9 @@ def manage_file(
 
     # Validate the source file.
     try:
+        if source_path.is_symlink():
+            return failure("Symbolic-link sources are not supported.")
+
         if not source_path.exists():
             return failure("Source file does not exist.")
 
@@ -290,6 +333,10 @@ def manage_file(
 
     # Prepare destination directories.
     try:
+        ensure_no_link_components(source_path)
+        ensure_no_link_components(intended_path.parent)
+        ensure_no_link_components(unsorted_path)
+
         intended_path.parent.mkdir(
             parents=True,
             exist_ok=True,
@@ -310,6 +357,9 @@ def manage_file(
                 "Unsorted destination is not a directory."
             )
 
+    except PathSafetyError as error:
+        return failure(str(error))
+
     except PermissionError as error:
         return failure(
             f"Permission denied while creating destination directories: {error}"
@@ -320,6 +370,17 @@ def manage_file(
             f"Unable to prepare destination directories: {error}"
         )
 
+    duplicate_path = (
+        Path(duplicate_directory)
+        if duplicate_directory is not None
+        else unsorted_path.parent / "_duplicates"
+    )
+
+    try:
+        ensure_no_link_components(duplicate_path)
+    except PathSafetyError as error:
+        return failure(str(error))
+
     # Copy and verify before deleting the source.
     try:
         final_destination, status, reason, operation_id = (
@@ -329,6 +390,7 @@ def manage_file(
         unsorted_directory=unsorted_path,
         chunk_size=chunk_size,
         undo_logger=undo_logger,
+        duplicate_directory=duplicate_path,
     )
 )
 
@@ -344,20 +406,16 @@ def manage_file(
     # Delete the source only after successful copy and verification.
     try:
         source_path.unlink()
-        if operation_id is not None:
-            undo_logger.update_status(
-                operation_id,
-                "completed",
-                "File successfully moved.",
-            )
-
     except OSError as error:
         if operation_id is not None:
-            undo_logger.update_status(
-                operation_id,
-                "failed",
-                "Destination copy exists, but original deletion failed.",
-            )
+            try:
+                undo_logger.update_status(
+                    operation_id,
+                    "failed",
+                    "Destination copy exists, but original deletion failed.",
+                )
+            except Exception:
+                pass
 
         return failure(
             f"Destination copy was verified, but source deletion failed: "
@@ -365,13 +423,29 @@ def manage_file(
             destination=final_destination,
         )
 
+    log_warning = None
+    if operation_id is not None:
+        try:
+            undo_logger.update_status(
+                operation_id,
+                "completed",
+                "File successfully moved.",
+            )
+        except Exception as error:
+            # The file move has completed. Preserve the destination and
+            # leave the durable pending record for recovery.
+            log_warning = (
+                f" Undo-log completion update failed: {error}. "
+                "The pending record can be recovered during undo."
+            )
+
 
 
     return FileMoveResult(
         source=source_path,
         destination=final_destination,
         status=status,
-        reason=reason,
+        reason=reason + (log_warning or ""),
         success=True,
     )
 

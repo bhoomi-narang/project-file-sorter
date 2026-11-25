@@ -255,3 +255,33 @@ def test_duplicate_move_result_structure(tmp_path):
 def test_invalid_chunk_size_for_movement(tmp_path):
     with pytest.raises(ValueError):
         move_duplicates([], tmp_path / "_duplicates", chunk_size=0)
+
+
+def test_duplicate_destination_is_preserved_if_completion_log_update_fails(tmp_path):
+    original = tmp_path / "report.txt"
+    duplicate = tmp_path / "report (1).txt"
+    duplicate_directory = tmp_path / "_duplicates"
+    original.write_text("same content", encoding="utf-8")
+    duplicate.write_text("same content", encoding="utf-8")
+
+    class FailingCompletionLogger:
+        def start_operation(self, original_path, destination_path):
+            return "operation-id"
+
+        def update_status(self, operation_id, status, reason=""):
+            if status == "completed":
+                raise OSError("simulated log write failure")
+
+    groups = detect_duplicates([original, duplicate])
+    results = move_duplicates(
+        groups,
+        duplicate_directory,
+        undo_logger=FailingCompletionLogger(),
+    )
+
+    destination = duplicate_directory / duplicate.name
+    assert len(results) == 1
+    assert not results[0].success
+    assert not duplicate.exists()
+    assert destination.read_text(encoding="utf-8") == "same content"
+    assert "preserved" in results[0].reason

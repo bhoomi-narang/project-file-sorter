@@ -15,7 +15,14 @@ from file_sorter.duplicate_detector import (
     detect_duplicates,
     move_duplicates,
 )
-from file_sorter.file_manager import manage_file
+from file_sorter.path_safety import (
+    ensure_no_link_components,
+    is_occupied,
+)
+from file_sorter.file_manager import (
+    calculate_file_hash,
+    manage_file,
+)
 from file_sorter.register_loader import (
     RegisterError,
     load_project_register,
@@ -51,7 +58,7 @@ class ExecutionPlan:
 def get_unique_path(path: Path) -> Path:
     """Return a unique path without overwriting existing files."""
 
-    if not path.exists():
+    if not is_occupied(path):
         return path
 
     counter = 1
@@ -61,7 +68,7 @@ def get_unique_path(path: Path) -> Path:
             f"{path.stem} ({counter}){path.suffix}"
         )
 
-        if not candidate.exists():
+        if not is_occupied(candidate):
             return candidate
 
         counter += 1
@@ -77,18 +84,38 @@ def build_execution_plan(
     This function never moves, creates, or deletes files.
     """
 
+    # Reject a linked inbox and linked ancestors.
+    if inbox.is_symlink():
+        raise ValueError(f"Inbox cannot be a symbolic link: {inbox}")
+    ensure_no_link_components(inbox.parent)
+
     if not inbox.exists():
-        raise FileNotFoundError(f"Inbox directory not found: {inbox}")
+        raise FileNotFoundError(
+            f"Inbox directory not found: {inbox}"
+        )
 
     if not inbox.is_dir():
-        raise NotADirectoryError(f"Inbox path is not a directory: {inbox}")
+        raise NotADirectoryError(
+            f"Inbox path is not a directory: {inbox}"
+        )
 
     project_register = load_project_register(register_path)
 
-    files = sorted(
-        (path for path in inbox.iterdir() if path.is_file()),
-        key=lambda path: path.name.casefold(),
-    )
+    files = []
+
+    # Inspect every direct entry before deciding whether it is a file.
+    for entry in inbox.iterdir():
+
+        if entry.is_symlink():
+            raise ValueError(
+                f"Symbolic links are not supported in the inbox: {entry}"
+            )
+        ensure_no_link_components(entry.parent)
+
+        if entry.is_file():
+            files.append(entry)
+
+    files.sort(key=lambda path: path.name.casefold())
 
     duplicate_groups = detect_duplicates(files)
 
@@ -142,20 +169,39 @@ def build_execution_plan(
             / source.name
         )
 
-        if intended_destination.exists():
+        duplicate_directory = output_root / "_duplicates"
+        unsorted_directory = output_root / "_unsorted"
+
+        if not is_occupied(intended_destination):
+            destination = intended_destination
+            reason = classification.reason
+
+        elif (
+            intended_destination.is_file()
+            and not intended_destination.is_symlink()
+            and calculate_file_hash(source)
+            == calculate_file_hash(intended_destination)
+        ):
             destination = get_unique_path(
-                output_root / "_unsorted" / source.name
+                duplicate_directory / source.name
             )
 
             reason = (
                 f"{classification.reason} "
-                "Destination filename already exists. "
-                "File will be routed to _unsorted."
+                "An identical file already exists at the intended "
+                "destination. Incoming file will be routed to _duplicates."
             )
 
         else:
-            destination = intended_destination
-            reason = classification.reason
+            destination = get_unique_path(
+                unsorted_directory / source.name
+            )
+
+            reason = (
+                f"{classification.reason} "
+                "A different file already exists at the intended "
+                "destination. Incoming file will be routed to _unsorted."
+            )
 
         operations.append(
             PlannedOperation(
@@ -276,6 +322,7 @@ def execute_plan(plan, undo_logger):
             intended_destination=operation.intended_destination,
             unsorted_directory=unsorted_directory,
             undo_logger=undo_logger,
+            duplicate_directory=duplicate_directory,
         )
 
         print(f"Source      : {result.source}")
@@ -285,7 +332,10 @@ def execute_plan(plan, undo_logger):
         print()
 
         report_results.append(
-            normalize_result(result)
+            normalize_result(
+                result,
+                is_duplicate=result.status == "duplicate_existing",
+            )
         )
 
         if result.success:

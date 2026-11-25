@@ -1,264 +1,217 @@
 # Project File Sorter
 
-A Python-based utility that automatically organizes project files
-according to project numbers and project status.
+A rule-based Python command-line application that organizes project files using a CSV project register. It classifies filenames, detects exact-content duplicates, avoids overwriting existing files, records operations for undo, and produces execution reports.
 
 ## Features
 
-- Extract project numbers from filenames.
-- Classify files using a project register.
-- Identify exact duplicate files.
-- Separate unknown and unsorted files.
-- Archive files belonging to closed projects.
-- Support dry-run execution.
-- Prevent accidental file overwrites.
-- Maintain an undo log for file restoration.
-- Generate execution summaries.
+- Validates a CSV project register and six-digit project identifiers.
+- Classifies files as active, closed, unknown, or unsorted.
+- Detects exact duplicates with SHA-256 hashing and byte-for-byte confirmation.
+- Preserves one canonical copy and routes additional copies to `_duplicates/`.
+- Routes closed projects to `_archive/<project-number>/`.
+- Routes unregistered projects to `_unknown/` and unclassifiable files to `_unsorted/`.
+- Detects existing destination conflicts and never intentionally overwrites files.
+- Uses exclusive destination creation, chunked copying, and SHA-256 verification.
+- Uses dry-run by default; `--apply` is required to move files.
+- Writes JSONL undo events and supports recovery from interrupted operations.
+- Produces timestamped application logs and a structured execution summary.
+- Rejects symbolic links and junctions in managed input/output paths where the platform exposes them.
 
-## Technology Stack
+## Requirements
 
-- Python
-- CSV
-- Pytest
-- Git
+- Python 3.10 or later
+- pip
+- pytest for development and testing
 
-## Project Structure
+No third-party runtime packages are required.
 
-```text
-src/file_sorter/  Application source code
-tests/            Automated tests
-data/             Project register
-inbox/            Input files
-logs/             Execution and undo logs
+## Installation
 
-## Development Progress
-
-### Phase 0 — Project Setup
-- Initialized Python project structure.
-- Configured virtual environment and Git.
-- Added project register.
-
-### Phase 1 — Project Register Loader
-
-- Implemented CSV-based project register loading.
-- Added validation for CSV headers.
-- Added six-digit project number validation.
-- Added active/closed status validation.
-- Added duplicate project number detection.
-- Added handling for missing and malformed CSV files.
-- Added UTF-8 BOM support.
-- Added automated tests using pytest.
-- Verified the loader against the actual project register.
-
-**Test Results:** 9 tests passed.
-
-### Phase 2 — Filename Parsing and Classification
-
-- Implemented six-digit project number extraction using regular expressions.
-- Added digit-boundary validation to prevent partial number matching.
-- Implemented classification based on project register status.
-- Added support for active, closed, unknown and unsorted categories.
-- Added structured classification results using dataclasses.
-- Added meaningful classification reasons.
-- Added automated tests for filename extraction and classification.
-- Verified edge cases involving multiple numbers and seven-digit numbers.
-
-**Test Results:** 26 tests passed across Phases 1 and 2.
-
-### ## Phase 3 — Duplicate Detection
-
-Implemented duplicate detection using SHA-256 file hashing.
-
-### Features
-- Calculates SHA-256 hashes using chunk-based file reading.
-- Identifies files with identical content.
-- Uses deterministic canonical-file selection.
-- Preserves files with similar names but different contents.
-- Moves duplicate files into the `_duplicates` directory.
-- Never deletes a duplicate before verifying that its copy is complete and valid.
-- Handles destination filename collisions without overwriting existing files.
-- Returns structured results for duplicate movement operations.
-
-### Testing
-- Unit tests cover hashing, duplicate identification, canonical selection, file movement, filename collisions, and error handling.
-- All 20 Phase 3 tests pass.
-
-##### Phase 4 — Safe File Movement
-
-Implemented safe file movement according to the destination determined by the classification logic.
-
-### Features
-- Creates destination directories when required.
-- Moves files without overwriting existing files.
-- Routes filename conflicts to `_unsorted`.
-- Generates unique destination names when fallback filenames already exist.
-- Verifies file integrity using SHA-256 hashes.
-- Preserves the source file when copying or verification fails.
-- Handles missing files, permission errors, inaccessible directories, and failed source deletion.
-- Returns structured movement results with status and reason information.
-
-### Testing
-- Unit tests cover successful movement, conflicts, integrity verification, missing files, permission failures, and error handling.
-- All 16 Phase 4 tests pass.
-
-##### Phase 5 — Dry Run and Command-Line Interface
-
-Implemented a command-line interface using Python's argparse module.
-
-### Features
-
-- Dry-run is the default execution mode.
-- Actual file movement requires the `--apply` argument.
-- Displays planned source and destination paths.
-- Displays classification reasons for planned movements.
-- Integrates duplicate detection and duplicate movement.
-- Supports custom inbox and project register paths.
-- Uses the same execution planning and classification logic for dry-run and apply.
-- Provides useful error messages for invalid arguments and missing paths.
-- Displays execution results and movement counts.
-
-### Usage
-
-Dry-run:
-
-    python -m file_sorter.main
-
-Actual execution:
-
-    python -m file_sorter.main --apply
-
-Help:
-
-    python -m file_sorter.main --help
-
-Custom inbox:
-
-    python -m file_sorter.main --inbox custom_folder
-
-Custom register:
-
-    python -m file_sorter.main --register custom.csv
-
-### Testing
-
-- Added CLI tests for dry-run behaviour.
-- Added tests for actual file movement.
-- Tested active, closed, unknown and duplicate files.
-- Tested existing destination conflicts.
-- Tested missing paths and invalid arguments.
-
-### Phase 6 — Undo and Recovery Mechanism
-
-Implemented an undo and recovery mechanism that allows users to reverse file-sorting operations.
-
-### Implementation
-
-- Generates a unique JSONL undo log for every real execution.
-- Records original file paths, destination paths, file hashes, operation IDs, timestamps, and operation statuses.
-- Tracks operations through `pending`, `completed`, `failed`, `restoring`, `restored`, and `restore_failed` states.
-- Restores files to their original locations.
-- Uses exclusive file creation to prevent overwriting existing files.
-- Verifies file integrity using SHA-256 before and after restoration.
-- Processes undo operations in reverse execution order.
-- Handles interrupted operations using recorded operation states.
-- Preserves conflicting files when safe restoration cannot be established.
-- Supports retrying failed or interrupted restoration operations.
-
-### Usage
-
-Undo a previous sorting execution:
+From the repository root:
 
 ```cmd
-python -m file_sorter.main --undo logs/undo_<timestamp>_<id>.jsonl
+python -m venv venv
+venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 ```
 
-Replace the example log filename with the actual undo log generated during execution.
+On macOS/Linux, activate the environment with `source venv/bin/activate`.
 
-### Recovery and Safety
+## Project layout
 
-- Existing files are never blindly overwritten.
-- Files with unexpected hashes are not restored.
-- If both original and destination files exist during a normal undo operation, both are preserved.
-- If restoration was interrupted after copying the original file back, the application can verify both copies and safely remove the redundant destination copy.
-- Undo operations are recorded using append-only JSONL events.
+```text
+project-file-sorter/
+├── data/
+│   └── project_register.csv
+├── inbox/                       # Input files
+├── src/file_sorter/
+│   ├── classifier.py             # Filename classification rules
+│   ├── duplicate_detector.py     # Hashing and duplicate movement
+│   ├── file_manager.py           # Verified, no-overwrite file movement
+│   ├── main.py                   # Planning, CLI, orchestration, reporting
+│   ├── path_safety.py            # Link/junction and occupied-path checks
+│   ├── register_loader.py        # CSV loading and validation
+│   ├── reporter.py               # Summary and exceptional-file reporting
+│   └── undo_manager.py           # JSONL operation log and restoration
+├── tests/
+├── logs/                         # Generated at runtime; not committed
+├── create_dataset.py
+├── pyproject.toml
+├── requirements.txt
+└── README.md
+```
 
-**Limitation:** Filesystem operations and undo-log writes are not one atomic transaction. The recovery mechanism handles identified interruption scenarios but cannot guarantee recovery from every possible hardware, filesystem, or power failure.
+## Project register format
 
-### Testing
+The CSV must contain these headers:
 
-Added unit and integration tests covering restoration, duplicate restoration, multiple-file restoration, hash verification, overwrite prevention, and interrupted-operation recovery.
+```csv
+project_no,status
+925173,active
+925180,active
+925181,active
+825104,closed
+```
 
-**Test result:** 89 tests passed.
+Project numbers must be unique six-digit values. Status must be `active` or `closed`.
 
-## Phase 7 — Reporting, Logging and Integration Testing
+## Classification rules
 
-### Execution Reporting
+| Filename condition | Destination |
+|---|---|
+| Exactly one valid registered active project number | `<project-number>/` |
+| Exactly one valid registered closed project number | `_archive/<project-number>/` |
+| Exactly one valid six-digit number not in the register | `_unknown/` |
+| No valid project number or multiple valid numbers | `_unsorted/` |
+| Exact duplicate content | One canonical file is retained; extra copies go to `_duplicates/` |
+| Destination filename exists with identical content | Incoming file goes to `_duplicates/` |
+| Destination filename exists with different content | Incoming file goes to `_unsorted/` |
 
-The application generates an execution summary containing:
+A filename similarity is not enough to establish a duplicate. Content hashes are used, and duplicate groups are confirmed with byte comparisons. If a fallback filename is occupied, the sorter generates a numbered filename such as `report (1).pdf`.
 
-- Total files scanned.
-- Total files successfully moved.
-- Number of duplicate files.
-- Number of unknown project files.
-- Number of unsorted files.
-- Number of archived files.
-- Number of active-project files.
-- Number of conflicts.
-- Number of failed operations.
+## Usage
 
-The summary is calculated using actual movement results rather than planned operations.
+Run commands from the repository root with the virtual environment activated.
 
-### Exceptional File Reporting
+### Dry run (default)
 
-Every file that does not successfully reach an active project folder is included in the exceptional-file report.
+```cmd
+python -m file_sorter.main
+```
 
-The report displays:
-- Original filename.
-- Actual destination, if available.
-- Operation status.
-- Reason for the outcome.
+A dry run displays planned movements and does not move input files.
 
-### Application Logging
+### Apply the plan
 
-Implemented timestamped application logging using Python's built-in `logging` module.
+```cmd
+python -m file_sorter.main --apply
+```
 
-Application logs are stored in:
+### Use a custom inbox or register
 
-`logs/sorter_<timestamp>_<id>.log`
+```cmd
+python -m file_sorter.main --inbox path\to\inbox
+python -m file_sorter.main --register path\to\project_register.csv
+python -m file_sorter.main --apply --inbox path\to\inbox --register path\to\project_register.csv
+```
 
-Logs record:
-- Execution start and completion.
-- Number of planned operations.
-- Duplicate detection information.
-- Successful file movements.
-- Failed operations and error reasons.
-- Execution summary.
-- Undo execution details.
+### Undo an execution
 
-Application logs are maintained separately from JSONL undo logs. Existing undo logs are preserved.
+Every `--apply` run creates a unique JSONL undo log under `logs/`.
 
-### Integration Testing
+```cmd
+python -m file_sorter.main --undo logs\undo_<timestamp>_<id>.jsonl
+```
 
-Implemented `tests/test_integration.py` to test the complete assignment dataset using an isolated temporary directory.
+Use the exact log generated by the execution you want to reverse. Undo restores files in reverse operation order, verifies hashes, and refuses to overwrite an existing original path.
 
-The integration test verifies:
-- Active project file movement.
-- Closed project archival.
-- Unknown project handling.
-- Unsorted file handling.
-- Exact duplicate detection and movement.
-- Existing filename conflict handling.
-- Preservation of existing files.
-- Undo log generation.
-- Application log generation.
-- Execution summary accuracy.
-- Removal of successfully moved files from the inbox.
+## Safety and recovery behavior
 
-### Test Results
+- Dry-run is the default; file movement requires explicit `--apply`.
+- Files are copied to a destination opened in exclusive-create mode (`xb`).
+- The destination is hash-verified and the source is re-hashed before source deletion.
+- Copy streams use bounded chunks rather than loading entire file contents into memory.
+- Destination files are flushed and synchronized before the source is removed.
+- Existing destination content is preserved. A conflict is routed to a fallback directory or a unique filename.
+- Symlink/junction input entries and linked destination path components are rejected where detectable by the operating system/Python runtime.
+- Undo events are append-only JSONL records. An unterminated final record is treated as an interrupted append; the logger truncates that incomplete tail before appending further events. A malformed complete record is rejected.
+- If a verified destination exists and the source has already been removed, a later undo-log status-write failure does not cause the destination to be deleted. The pending undo record can be used for recovery.
+- If an operation cannot be restored without risking overwrite or data loss, both existing copies are preserved and the operation is reported as failed.
 
-- Reporter unit tests: 3 passed.
-- Logging tests: 2 passed.
-- Complete integration test: 1 passed.
-- Full project test suite: **95 passed**.
+### Operational limitations
 
-All integration tests operate on temporary test data and do not modify the original assignment dataset.
+Filesystem operations and JSONL writes cannot form one atomic transaction across all supported operating systems. A sudden power loss, storage-device failure, external process changing files, or filesystem corruption can still require manual inspection. The tool does not claim transactional guarantees. Run it with exclusive control of the input/output directories and retain backups for important data.
+
+The application does not follow nested directories inside the inbox; it processes direct file entries only. It is intended for controlled project-file sorting, not as a general-purpose backup or synchronization system.
+
+## Logging and reports
+
+Runtime logs are created under `logs/`:
+
+- `sorter_<timestamp>_<id>.log` — application events, failures, and summary.
+- `undo_<timestamp>_<id>.jsonl` — operation records required for recovery.
+
+The execution summary includes scanned, moved, duplicate, unknown, unsorted, archived, active-project, conflict, and failed counts. Exceptional-file output includes each file's destination, status, and reason.
+
+Generated output directories and runtime logs are ignored by Git. The input `inbox/`, source code, tests, and project register remain normal project files.
+
+## Testing
+
+Run the complete test suite:
+
+```cmd
+pytest -v
+```
+
+The tests cover register validation, filename classification, hashing and duplicate detection, safe movement, dry-run and apply behavior, collision handling, undo/recovery, reporting, logging, symlink handling, and end-to-end integration using temporary test data.
+
+**Current verified test result for this Phase 8 working tree: 110 passed.** Re-run the suite in your own environment before committing; test counts can change as further tests are added.
+
+## Architecture and responsibilities
+
+- `register_loader.py`: validates external project-register data.
+- `classifier.py`: applies deterministic filename-to-project rules.
+- `duplicate_detector.py`: computes hashes, confirms duplicate content, and moves extra copies.
+- `main.py`: builds a read-only plan, displays it, selects dry-run/apply/undo, and coordinates reporting.
+- `file_manager.py`: owns safe copy, verification, collision handling, and source deletion.
+- `undo_manager.py`: records operation state and restores files from validated log entries.
+- `path_safety.py`: centralizes path occupancy and link/junction checks.
+- `reporter.py`: converts execution results into summary counts and exceptional-file details.
+
+## Design for nightly processing of 50,000+ files
+
+The current implementation is a single-process, in-memory sorter intended for the supplied assignment dataset and moderate directories. Chunked hashing bounds memory used for file contents, but the current plan and duplicate index retain paths/hash groups in memory. The 50,000+ file design below is a scaling proposal, not a claim that the current implementation has been load-tested at that scale.
+
+### Proposed processing pipeline
+
+1. **Incremental discovery:** enumerate with `os.scandir()` and process bounded batches rather than constructing one large list of every file.
+2. **Persistent hash cache:** use SQLite keyed by normalized path plus file size, modification time in nanoseconds, and a stable file identity where available. Re-hash when metadata changes; treat the cache as an optimization, never as proof of identity.
+3. **Streaming duplicate index:** store `(content_hash, file_path, size)` in SQLite with an index on hash and size. Compare candidate contents byte-for-byte before declaring duplicates.
+4. **Bounded work queue:** limit concurrent hashing/copy tasks so open file descriptors, memory, and disk throughput remain controlled. Start with one worker and benchmark before enabling concurrency.
+5. **Per-file durable journal:** persist a planned operation, then state transitions such as `pending`, `copied_verified`, and `completed`. Use idempotent recovery rules and unique operation IDs.
+6. **Exclusive destination creation:** retain no-overwrite semantics. Use same-volume atomic rename only when its semantics and durability have been validated for the target filesystem; otherwise use exclusive copy, fsync, verify, then unlink source.
+7. **Single-writer coordination:** acquire a process-level lock for a given inbox/output root. Do not allow two nightly runs to sort the same tree concurrently.
+8. **Monitoring:** emit structured counts, elapsed time, bytes hashed/copied, throughput, retries, failures, and recovery events. Alert on nonzero failures, stale pending operations, low disk space, and unusually low throughput.
+9. **Retention and backup:** rotate application logs, retain undo journals according to policy, and back up the journal/database before pruning. Never automatically delete source or duplicate data as a cleanup shortcut.
+
+### Risks and protections
+
+| Risk | Protection |
+|---|---|
+| File changes while being hashed/copied | Compare metadata and hashes before/after; reject changed sources |
+| Duplicate hash collision | Confirm bytes before deduplicating |
+| Two runs choose the same destination | Process lock plus exclusive file creation |
+| Crash during copy or restore | Durable journal, fsync, idempotent recovery, and verification |
+| Cache becomes stale | Validate size/mtime/file identity and re-hash on uncertainty |
+| Disk fills during copy | Check available capacity where practical; preserve source until verified copy completes |
+| Excessive concurrency harms storage | Bounded workers and load testing |
+| Undo log grows without bound | Rotation/retention only after backup and completion checks |
+
+### Performance validation before production rollout
+
+A production rollout should benchmark representative file-size distributions and storage hardware, not only file counts. Test 50,000 small files, mixed files, and a small number of very large files. Measure scan time, hashing throughput, copy throughput, peak memory, open descriptors, database growth, recovery time, and failure behavior. Run interruption tests at each journal/copy/delete boundary. Set service-level targets only after these measurements.
+
+## Development status
+
+Phases 0–7 established the project structure, validation, classification, duplicate handling, safe movement, CLI, undo, reporting, logging, and integration tests. Phase 8 hardens filesystem and recovery behavior, expands regression coverage, and documents the scale-out design and its current implementation limits.

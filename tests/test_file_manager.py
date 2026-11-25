@@ -381,3 +381,148 @@ def test_existing_destination_is_never_overwritten(tmp_path):
 
     # Original source must no longer exist after successful movement.
     assert not source.exists()
+
+def test_identical_existing_destination_routes_to_duplicates(tmp_path):
+    source = create_source(tmp_path, "identical content")
+
+    destination = tmp_path / "925173" / "sample.txt"
+    destination.parent.mkdir(parents=True)
+    destination.write_text("identical content", encoding="utf-8")
+
+    unsorted = tmp_path / "_unsorted"
+    duplicates = tmp_path / "_duplicates"
+
+    result = manage_file(
+        source,
+        destination,
+        unsorted,
+        duplicate_directory=duplicates,
+    )
+
+    duplicate_file = duplicates / "sample.txt"
+
+    assert result.success
+    assert result.status == "duplicate_existing"
+    assert result.destination == duplicate_file
+
+    assert destination.read_text(encoding="utf-8") == "identical content"
+    assert duplicate_file.read_text(encoding="utf-8") == "identical content"
+
+    assert not source.exists()
+
+def test_existing_duplicate_filename_generates_unique_name(tmp_path):
+    source = create_source(tmp_path, "identical content")
+
+    destination = tmp_path / "925173" / "sample.txt"
+    destination.parent.mkdir(parents=True)
+    destination.write_text("identical content", encoding="utf-8")
+
+    unsorted = tmp_path / "_unsorted"
+    duplicates = tmp_path / "_duplicates"
+    duplicates.mkdir()
+
+    existing_duplicate = duplicates / "sample.txt"
+    existing_duplicate.write_text(
+        "older duplicate",
+        encoding="utf-8",
+    )
+
+    result = manage_file(
+        source,
+        destination,
+        unsorted,
+        duplicate_directory=duplicates,
+    )
+
+    unique_duplicate = duplicates / "sample (1).txt"
+
+    assert result.success
+    assert result.status == "duplicate_existing"
+    assert result.destination == unique_duplicate
+
+    assert existing_duplicate.read_text(encoding="utf-8") == (
+        "older duplicate"
+    )
+
+    assert unique_duplicate.read_text(encoding="utf-8") == (
+        "identical content"
+    )
+
+    assert destination.read_text(encoding="utf-8") == (
+        "identical content"
+    )
+
+    assert not source.exists()
+
+def test_move_remains_successful_if_completion_log_update_fails(tmp_path):
+    source = create_source(tmp_path, "durable content")
+    destination = tmp_path / "925173" / source.name
+
+    class FailingCompletionLogger:
+        def start_operation(self, original_path, destination_path):
+            return "operation-id"
+
+        def update_status(self, operation_id, status, reason=""):
+            if status == "completed":
+                raise OSError("simulated log write failure")
+
+    result = manage_file(
+        source,
+        destination,
+        tmp_path / "_unsorted",
+        undo_logger=FailingCompletionLogger(),
+    )
+
+    assert result.success
+    assert not source.exists()
+    assert destination.read_text(encoding="utf-8") == "durable content"
+    assert "Undo-log completion update failed" in result.reason
+
+
+def test_dangling_destination_symlink_is_not_treated_as_free_path(tmp_path):
+    source = create_source(tmp_path, "incoming")
+    destination = tmp_path / "925173" / source.name
+    destination.parent.mkdir(parents=True)
+    missing_target = tmp_path / "missing-target.txt"
+
+    try:
+        destination.symlink_to(missing_target)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"Symlinks are unavailable: {error}")
+
+    result = manage_file(
+        source,
+        destination,
+        tmp_path / "_unsorted",
+    )
+
+    fallback = tmp_path / "_unsorted" / source.name
+    assert result.success
+    assert fallback.read_text(encoding="utf-8") == "incoming"
+    assert destination.is_symlink()
+    assert not source.exists()
+
+
+def test_symlinked_destination_directory_is_rejected(tmp_path):
+    source = create_source(tmp_path, "safe source")
+    external_directory = tmp_path / "external"
+    external_directory.mkdir()
+    project_directory = tmp_path / "925173"
+
+    try:
+        project_directory.symlink_to(
+            external_directory,
+            target_is_directory=True,
+        )
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"Directory symlinks are unavailable: {error}")
+
+    result = manage_file(
+        source,
+        project_directory / source.name,
+        tmp_path / "_unsorted",
+    )
+
+    assert not result.success
+    assert source.exists()
+    assert not (external_directory / source.name).exists()

@@ -284,3 +284,36 @@ def test_recovery_preserves_both_files_when_hashes_differ(tmp_path):
     # Neither file should be deleted or overwritten.
     assert original.read_bytes() == original_content
     assert destination.read_bytes() == destination_content
+
+def test_incomplete_final_jsonl_record_is_ignored_and_repaired(tmp_path):
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    log = tmp_path / "undo.jsonl"
+    source.write_text("recoverable data", encoding="utf-8")
+
+    logger = UndoLogger(log)
+    operation_id = logger.start_operation(source, destination)
+
+    with log.open("ab") as file:
+        file.write(b'{"event":"status","operation_id":"truncated')
+
+    operations = read_undo_log(log)
+    assert len(operations) == 1
+    assert operations[0]["operation_id"] == operation_id
+    assert operations[0]["status"] == "pending"
+
+    # Opening the logger repairs the partial tail before the next append.
+    repaired_logger = UndoLogger(log)
+    repaired_logger.update_status(operation_id, "failed", "test event")
+
+    operations = read_undo_log(log)
+    assert operations[0]["status"] == "failed"
+    assert operations[0]["reason"] == "test event"
+
+
+def test_complete_malformed_jsonl_record_is_rejected(tmp_path):
+    log = tmp_path / "undo.jsonl"
+    log.write_bytes(b'{invalid json}\n')
+
+    with pytest.raises(UndoLogError):
+        read_undo_log(log)

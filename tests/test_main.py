@@ -448,3 +448,217 @@ def test_undo_does_not_overwrite_existing_original(tmp_path, monkeypatch):
     # Neither file should be overwritten or deleted.
     assert source.read_text() == "Different content"
     assert sorted_file.read_text() == "Original content"
+
+def test_file_symlink_in_inbox_is_rejected(tmp_path):
+    inbox, register = setup_project(tmp_path)
+
+    external_file = tmp_path / "external.txt"
+    external_file.write_text(
+        "Do not move this file",
+        encoding="utf-8",
+    )
+
+    inbox.mkdir()
+
+    link = inbox / "925173_external.txt"
+
+    try:
+        link.symlink_to(external_file)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"File symlinks are unavailable: {error}")
+
+    with pytest.raises(
+        ValueError,
+        match="Symbolic links are not supported",
+    ):
+        build_execution_plan(inbox, register)
+
+    assert external_file.exists()
+    assert external_file.read_text(encoding="utf-8") == (
+        "Do not move this file"
+    )
+
+
+def test_directory_symlink_in_inbox_is_rejected(tmp_path):
+    inbox, register = setup_project(tmp_path)
+
+    external_directory = tmp_path / "external"
+    external_directory.mkdir()
+
+    (external_directory / "important.txt").write_text(
+        "External content",
+        encoding="utf-8",
+    )
+
+    inbox.mkdir()
+
+    link = inbox / "external_link"
+
+    try:
+        link.symlink_to(external_directory, target_is_directory=True)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"Directory symlinks are unavailable: {error}")
+
+    with pytest.raises(
+        ValueError,
+        match="Symbolic links are not supported",
+    ):
+        build_execution_plan(inbox, register)
+
+    assert (
+        external_directory / "important.txt"
+    ).exists()
+
+
+def test_inbox_itself_cannot_be_a_symlink(tmp_path):
+    real_inbox = tmp_path / "real_inbox"
+    real_inbox.mkdir()
+
+    register = tmp_path / "project_register.csv"
+    create_register(register)
+
+    inbox_link = tmp_path / "inbox_link"
+
+    try:
+        inbox_link.symlink_to(
+            real_inbox,
+            target_is_directory=True,
+        )
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"Directory symlinks are unavailable: {error}")
+
+    with pytest.raises(
+        ValueError,
+        match="Inbox cannot be a symbolic link",
+    ):
+        build_execution_plan(inbox_link, register)
+
+    assert real_inbox.is_dir()
+
+def test_dry_run_routes_identical_existing_file_to_duplicates(tmp_path):
+    inbox, register = setup_project(tmp_path)
+
+    source = create_file(
+        inbox,
+        "925173_layout.dwg",
+        "same content",
+    )
+
+    existing_destination = (
+        tmp_path / "925173" / source.name
+    )
+    existing_destination.parent.mkdir(parents=True)
+    existing_destination.write_text(
+        "same content",
+        encoding="utf-8",
+    )
+
+    plan = build_execution_plan(inbox, register)
+
+    expected_destination = (
+        tmp_path / "_duplicates" / source.name
+    )
+
+    assert len(plan.operations) == 1
+    assert plan.operations[0].destination == expected_destination
+
+    # Dry-run must not modify either file.
+    assert source.exists()
+    assert existing_destination.exists()
+    assert not expected_destination.exists()
+
+def test_dry_run_routes_different_existing_file_to_unsorted(tmp_path):
+    inbox, register = setup_project(tmp_path)
+
+    source = create_file(
+        inbox,
+        "925173_layout.dwg",
+        "incoming content",
+    )
+
+    existing_destination = (
+        tmp_path / "925173" / source.name
+    )
+    existing_destination.parent.mkdir(parents=True)
+    existing_destination.write_text(
+        "existing content",
+        encoding="utf-8",
+    )
+
+    plan = build_execution_plan(inbox, register)
+
+    expected_destination = (
+        tmp_path / "_unsorted" / source.name
+    )
+
+    assert len(plan.operations) == 1
+    assert plan.operations[0].destination == expected_destination
+
+    # Dry-run must preserve both files.
+    assert source.exists()
+    assert existing_destination.exists()
+    assert not expected_destination.exists()
+
+def test_repeated_execution_routes_identical_file_to_duplicates(tmp_path):
+    inbox, register = setup_project(tmp_path)
+
+    source = create_file(
+        inbox,
+        "925173_layout.dwg",
+        "same content",
+    )
+
+    existing_destination = tmp_path / "925173" / source.name
+    existing_destination.parent.mkdir(parents=True)
+    existing_destination.write_text("same content", encoding="utf-8")
+
+    # Verify the dry-run decision.
+    plan = build_execution_plan(inbox, register)
+
+    expected_destination = tmp_path / "_duplicates" / source.name
+
+    assert plan.operations[0].destination == expected_destination
+
+    # Execute the same operation.
+    result = main([
+        "--apply",
+        "--inbox", str(inbox),
+        "--register", str(register),
+    ])
+
+    assert result == 0
+    assert existing_destination.read_text(encoding="utf-8") == "same content"
+    assert expected_destination.read_text(encoding="utf-8") == "same content"
+    assert not source.exists()
+
+def test_repeated_execution_routes_conflicting_file_to_unsorted(tmp_path):
+    inbox, register = setup_project(tmp_path)
+
+    source = create_file(
+        inbox,
+        "925173_layout.dwg",
+        "incoming content",
+    )
+
+    existing_destination = tmp_path / "925173" / source.name
+    existing_destination.parent.mkdir(parents=True)
+    existing_destination.write_text("existing content", encoding="utf-8")
+
+    # Verify the dry-run decision.
+    plan = build_execution_plan(inbox, register)
+
+    expected_destination = tmp_path / "_unsorted" / source.name
+
+    assert plan.operations[0].destination == expected_destination
+
+    # Execute the same operation.
+    result = main([
+        "--apply",
+        "--inbox", str(inbox),
+        "--register", str(register),
+    ])
+
+    assert result == 0
+    assert existing_destination.read_text(encoding="utf-8") == "existing content"
+    assert expected_destination.read_text(encoding="utf-8") == "incoming content"
+    assert not source.exists()
