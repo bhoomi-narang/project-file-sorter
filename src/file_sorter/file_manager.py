@@ -187,14 +187,6 @@ def _copy_to_available_destination(
                     candidate,
                 )
 
-            operation_id = None
-
-            if undo_logger is not None:
-                operation_id = undo_logger.start_operation(
-                    source,
-                    candidate,
-                )
-
             try:
                 _copy_and_verify(source, candidate, chunk_size)
 

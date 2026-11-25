@@ -189,3 +189,76 @@ Replace the example log filename with the actual undo log generated during execu
 Added unit and integration tests covering restoration, duplicate restoration, multiple-file restoration, hash verification, overwrite prevention, and interrupted-operation recovery.
 
 **Test result:** 89 tests passed.
+
+## Phase 7 — Reporting, Logging and Integration Testing
+
+### Execution Reporting
+
+The application generates an execution summary containing:
+
+- Total files scanned.
+- Total files successfully moved.
+- Number of duplicate files.
+- Number of unknown project files.
+- Number of unsorted files.
+- Number of archived files.
+- Number of active-project files.
+- Number of conflicts.
+- Number of failed operations.
+
+The summary is calculated using actual movement results rather than planned operations.
+
+### Exceptional File Reporting
+
+Every file that does not successfully reach an active project folder is included in the exceptional-file report.
+
+The report displays:
+- Original filename.
+- Actual destination, if available.
+- Operation status.
+- Reason for the outcome.
+
+### Application Logging
+
+Implemented timestamped application logging using Python's built-in `logging` module.
+
+Application logs are stored in:
+
+`logs/sorter_<timestamp>_<id>.log`
+
+Logs record:
+- Execution start and completion.
+- Number of planned operations.
+- Duplicate detection information.
+- Successful file movements.
+- Failed operations and error reasons.
+- Execution summary.
+- Undo execution details.
+
+Application logs are maintained separately from JSONL undo logs. Existing undo logs are preserved.
+
+### Integration Testing
+
+Implemented `tests/test_integration.py` to test the complete assignment dataset using an isolated temporary directory.
+
+The integration test verifies:
+- Active project file movement.
+- Closed project archival.
+- Unknown project handling.
+- Unsorted file handling.
+- Exact duplicate detection and movement.
+- Existing filename conflict handling.
+- Preservation of existing files.
+- Undo log generation.
+- Application log generation.
+- Execution summary accuracy.
+- Removal of successfully moved files from the inbox.
+
+### Test Results
+
+- Reporter unit tests: 3 passed.
+- Logging tests: 2 passed.
+- Complete integration test: 1 passed.
+- Full project test suite: **95 passed**.
+
+All integration tests operate on temporary test data and do not modify the original assignment dataset.

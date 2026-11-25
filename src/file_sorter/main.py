@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 
@@ -18,6 +19,13 @@ from file_sorter.file_manager import manage_file
 from file_sorter.register_loader import (
     RegisterError,
     load_project_register,
+)
+
+from file_sorter.reporter import (
+    normalize_result,
+    generate_summary,
+    display_summary,
+    display_exceptional_files,
 )
 
 
@@ -188,10 +196,13 @@ def display_plan(plan: ExecutionPlan) -> None:
 
 
 def execute_plan(plan, undo_logger):
-    """Execute the operations in the generated plan."""
+    """Execute the plan and collect structured results."""
 
     successful = 0
     failed = 0
+    report_results = []
+
+    logger = logging.getLogger("file_sorter")
 
     output_root = (
         plan.operations[0].source.resolve().parent.parent
@@ -202,9 +213,16 @@ def execute_plan(plan, undo_logger):
     duplicate_directory = output_root / "_duplicates"
     unsorted_directory = output_root / "_unsorted"
 
+    logger.info("Starting sorting execution.")
+    logger.info("Planned operations: %d", len(plan.operations))
+    logger.info(
+        "Duplicate groups detected: %d",
+        len(plan.duplicate_groups),
+    )
+
     print("\n========== EXECUTION RESULTS ==========\n")
 
-    # Move duplicates first.
+    # Process duplicate files first.
     if plan.duplicate_groups:
 
         duplicate_results = move_duplicates(
@@ -221,14 +239,35 @@ def execute_plan(plan, undo_logger):
             print(f"Reason      : {result.reason}")
             print()
 
+            report_results.append(
+                normalize_result(
+                    result,
+                    is_duplicate=True,
+                )
+            )
+
             if result.success:
                 successful += 1
+
+                logger.info(
+                    "Duplicate moved: %s -> %s",
+                    result.source,
+                    result.destination,
+                )
+
             else:
                 failed += 1
 
-    # Execute normal classification movements.
+                logger.error(
+                    "Duplicate movement failed: %s | Reason: %s",
+                    result.source,
+                    result.reason,
+                )
+
+    # Process normally classified files.
     for operation in plan.operations:
 
+        # Duplicates were already processed above.
         if operation.operation_type == "duplicate":
             continue
 
@@ -245,17 +284,41 @@ def execute_plan(plan, undo_logger):
         print(f"Reason      : {result.reason}")
         print()
 
+        report_results.append(
+            normalize_result(result)
+        )
+
         if result.success:
             successful += 1
+
+            logger.info(
+                "File moved: %s -> %s | Status: %s",
+                result.source,
+                result.destination,
+                result.status,
+            )
+
         else:
             failed += 1
+
+            logger.error(
+                "File movement failed: %s | Reason: %s",
+                result.source,
+                result.reason,
+            )
 
     print("----------------------------------------")
     print(f"Successful movements: {successful}")
     print(f"Failed movements    : {failed}")
     print("----------------------------------------")
 
-    return successful, failed
+    logger.info(
+        "Execution finished. Successful: %d, Failed: %d",
+        successful,
+        failed,
+    )
+
+    return successful, failed, report_results
 
 
 def create_parser():
@@ -303,23 +366,70 @@ def create_undo_log():
 
     return logs_directory / f"undo_{timestamp}_{unique_id}.jsonl"
 
+def setup_execution_logger():
+    """Create a timestamped application log for one execution."""
+
+    logs_directory = Path("logs")
+    logs_directory.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_id = uuid.uuid4().hex[:8]
+
+    log_file = logs_directory / (
+        f"sorter_{timestamp}_{unique_id}.log"
+    )
+
+    logger = logging.getLogger("file_sorter")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    # Prevent duplicate handlers if main() is called more than once.
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
+
+    file_handler = logging.FileHandler(
+        log_file,
+        encoding="utf-8",
+    )
+
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    return logger
+
 
 def main(argv: list[str] | None = None) -> int:
-
     """CLI entry point."""
 
     parser = create_parser()
     args = parser.parse_args(argv)
 
+    logger = setup_execution_logger()
+
+    logger.info("File sorter started.")
+
     # Handle undo operation.
     if args.undo:
+
         try:
+            logger.info(
+                "Starting undo operation using log: %s",
+                args.undo,
+            )
+
             results = undo_execution(args.undo)
 
             successful = 0
             failed = 0
 
             for result in results:
+
                 print(
                     f"{result.status.upper()}: "
                     f"{result.original_path} - {result.reason}"
@@ -327,50 +437,120 @@ def main(argv: list[str] | None = None) -> int:
 
                 if result.success:
                     successful += 1
+
+                    logger.info(
+                        "File restored: %s",
+                        result.original_path,
+                    )
+
                 else:
                     failed += 1
+
+                    logger.error(
+                        "File restoration failed: %s | Reason: %s",
+                        result.original_path,
+                        result.reason,
+                    )
 
             print("\nUndo Summary")
             print(f"Restored: {successful}")
             print(f"Failed: {failed}")
 
+            logger.info(
+                "Undo execution completed. Restored: %d, Failed: %d",
+                successful,
+                failed,
+            )
+
             return 1 if failed else 0
 
         except Exception as error:
-            print(f"Undo failed: {error}", file=sys.stderr)
+
+            logger.exception("Undo operation failed.")
+
+            print(
+                f"Undo failed: {error}",
+                file=sys.stderr,
+            )
+
             return 1
 
     try:
+
+        # Build the execution plan.
         plan = build_execution_plan(
             inbox=args.inbox,
             register_path=args.register,
         )
 
+        logger.info(
+            "Files scanned: %d",
+            len(plan.operations),
+        )
+
         display_plan(plan)
 
-        # Dry run is the default.
+        # Dry run is the default behavior.
         if not args.apply:
+
             print("\nDRY RUN: No files were moved or modified.")
             print("Use --apply to execute these operations.")
+
+            logger.info("Dry run completed. No files were moved.")
+
             return 0
 
-        # Create undo log for actual execution.
+        # Create an undo log before actual execution.
         undo_log_path = create_undo_log()
         undo_logger = UndoLogger(undo_log_path)
 
         print(f"\nUndo log created: {undo_log_path}")
 
-        # Execute the plan with undo logging enabled.
-        _, failed = execute_plan(plan, undo_logger)
+        logger.info(
+            "Undo log created: %s",
+            undo_log_path,
+        )
+
+        # Execute the plan.
+        successful, failed, report_results = execute_plan(
+            plan,
+            undo_logger,
+        )
+
+        # Generate execution summary.
+        summary = generate_summary(
+            report_results,
+            total_scanned=len(plan.operations),
+        )
+
+        display_summary(summary)
+
+        # Explain files that did not reach active project folders.
+        display_exceptional_files(report_results)
+
+        logger.info(
+            "Execution summary: %s",
+            summary,
+        )
 
         if failed:
+
             print(
                 "\nExecution completed with errors.",
                 file=sys.stderr,
             )
+
+            logger.warning(
+                "Execution completed with %d failed operations.",
+                failed,
+            )
+
             return 1
 
         print("\nExecution completed successfully.")
+
+        logger.info("Execution completed successfully.")
+
         return 0
 
     except (
@@ -383,7 +563,13 @@ def main(argv: list[str] | None = None) -> int:
         ValueError,
     ) as error:
 
-        print(f"\nERROR: {error}", file=sys.stderr)
+        logger.exception("Sorting execution failed.")
+
+        print(
+            f"\nERROR: {error}",
+            file=sys.stderr,
+        )
+
         return 2
 
 if __name__ == "__main__":
